@@ -1,1 +1,22 @@
+version: '3.8'
+
+services:
+  antink-server:
+    build: .
+    container_name: antink-server
+    privileged: true
+    volumes:
+      - ./it24_host:/it24_host
+      - ./antink_mount:/antink_mount
+      - ./antink-logs:/var/log
+    cap_add:
+      - SYS_ADMIN
+      - MKNOD
+
+  antink-logger:
+    image: debian
+    container_name: antink-logger
+    volumes:
+      - ./antink-logs:/var/log
+    command: ["bash", "-c", "tail -F /var/log/it24.log"]
 
