@@ -252,7 +252,7 @@ static int baymax_unlink(const char *path) {
 
     if (found) {
         char log_msg[512];
-        snprintf(log_msg, sizeof(log_msg), "DELETE: %s.000 - %s.%03d", filename, filename, i - 1);
+        snprintf(log_msg, sizeof(log_msg), "DELETE: %s -> %s.000 - %s.%03d", filename, filename, filename, i - 1);
         log_activity(log_msg);
         return 0;
     }
