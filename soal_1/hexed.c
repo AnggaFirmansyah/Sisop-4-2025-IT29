@@ -13,7 +13,7 @@
 #include <fcntl.h>
 #include <curl/curl.h>
 
-#define BASE_DIR "source_dir"
+#define BASE_DIR "/home/khalid/a/source_dir"  // Ganti ini ke path absolut sesuai di PC kamu
 #define TEMP_ZIP "/tmp/temp.zip"
 #define IMAGE_DIR "image"
 
@@ -21,6 +21,7 @@ typedef struct {
     unsigned char *data;
     size_t size;
 } Memory;
+
 static Memory zip_data = {NULL, 0};
 
 // Curl write callback (to memory)
@@ -138,6 +139,24 @@ static void log_conversion(const char *src, const char *out) {
     fclose(f);
 }
 
+// Debug fungsi untuk tes baca folder anomali
+void test_read_anomali() {
+    char real[512];
+    snprintf(real, sizeof(real), "%s/anomali", BASE_DIR);
+    DIR *d = opendir(real);
+    if (!d) {
+        perror("opendir test_read_anomali");
+        return;
+    }
+    struct dirent *e;
+    printf("Testing read dir %s\n", real);
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") && strcmp(e->d_name, ".."))
+            printf("Found file: %s\n", e->d_name);
+    }
+    closedir(d);
+}
+
 // ========== FUSE Operations ==========
 
 static int do_getattr(const char *path, struct stat *st, struct fuse_file_info *fi) {
@@ -167,6 +186,7 @@ static int do_getattr(const char *path, struct stat *st, struct fuse_file_info *
 static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                       off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
     (void)offset; (void)fi; (void)flags;
+
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
 
@@ -178,12 +198,19 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     if (strcmp(path, "/anomali") == 0) {
         char real[512];
         snprintf(real, sizeof(real), "%s/anomali", BASE_DIR);
+        printf("Reading directory in do_readdir: %s\n", real); // debug
+
         DIR *d = opendir(real);
-        if (!d) return -errno;
+        if (!d) {
+            perror("opendir do_readdir");
+            return -errno;
+        }
         struct dirent *e;
         while ((e = readdir(d)) != NULL) {
-            if (strcmp(e->d_name, ".") && strcmp(e->d_name, ".."))
+            if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) {
+                printf("Found file in do_readdir: %s\n", e->d_name); // debug
                 filler(buf, e->d_name, NULL, 0, 0);
+            }
         }
         closedir(d);
         return 0;
@@ -260,5 +287,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Gagal download atau extract!\n");
         return 1;
     }
+
+    test_read_anomali();  // Debug: cek folder anomali dan isinya di source_dir
+
     return fuse_main(argc, argv, &ops, NULL);
 }
