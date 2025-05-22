@@ -355,6 +355,280 @@ Dikarenakan kode sebelumnya hanya bisa menyelesaikan soal bagian a, maka perlu d
 # Soal 2
 Oleh : Oryza Qiara Ramadhani (084)
 
+Program ini menggunakan FUSE (Filesystem in Userspace) untuk membuat direktori virtual (mount_dir) yang menampilkan file utuh seperti Baymax.jpeg, padahal aslinya tersimpan dalam pecahan-pecahan di folder relics. Setiap operasi penting seperti membaca, menulis, menghapus, dan menyalin file akan dicatat dalam log file activity.log, agar sang ilmuwan dapat melacak semua aktivitas yang dilakukan terhadap Baymax.
+
+a. Menampilkan file utuh dari beberapa pecahan 
+Ketika kita menjalankan ls atau membuka file di mount_dir, fungsi getattr ini akan dijalankan. Tujuannya adalah mengecek apakah file itu ada dengan menggabungkan ukuran seluruh pecahan.
+
+```bash
+static int baymax_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
+    (void)fi;
+    memset(stbuf, 0, sizeof(struct stat));
+
+    if (strcmp(path, "/") == 0) {
+        stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+        return 0;
+    }
+
+    const char *filename = path + 1;
+    if (filename[0] == '\0') return -ENOENT;
+
+    off_t size = 0;
+    char chunk_path[512];
+    int found = 0;
+
+    for (int i = 0;; i++) {
+        snprintf(chunk_path, sizeof(chunk_path), "%s/%s.%03d", RELIC_DIR, filename, i);
+        FILE *f = fopen(chunk_path, "rb");
+        if (!f) break;
+        found = 1;
+        fseek(f, 0, SEEK_END);
+        size += ftell(f);
+        fclose(f);
+    }
+
+    if (!found) return -ENOENT;
+
+    stbuf->st_mode = S_IFREG | 0644;
+    stbuf->st_nlink = 1;
+    stbuf->st_size = size;
+    return 0;
+}
+```
+
+b. Menampilkan Daftar File (readdir)
+Di folder relics, setiap file terbagi dalam potongan .000, .001, dst. Tapi di mount FUSE, kita hanya ingin tampilkan nama utuhnya. Jadi readdir akan menyaring hanya nama dasarnya dan tidak menampilkan duplikat.
+```bash
+static int baymax_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                          off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+    (void)offset; (void)fi; (void)flags;
+
+    if (strcmp(path, "/") != 0)
+        return -ENOENT;
+
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+
+    DIR *dp = opendir(RELIC_DIR);
+    if (!dp) return -ENOENT;
+
+    struct dirent *entry;
+    char prev_filename[512] = "";
+
+    while ((entry = readdir(dp)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        char fname[512];
+        strcpy(fname, entry->d_name);
+
+        char *ext = strrchr(fname, '.');
+        if (ext && strlen(ext) == 4) {
+            *ext = '\0';
+        }
+
+        if (strcmp(prev_filename, fname) != 0) {
+            filler(buf, fname, NULL, 0, 0);
+            strcpy(prev_filename, fname);
+        }
+    }
+    closedir(dp);
+    return 0;
+}
+```
+
+c. Membaca File Gabungan (open & read)
+Saat file dibuka atau dibaca, program akan mencatat log dan menggabungkan isi semua pecahan menjadi satu aliran data.
+```bash
+static int baymax_open(const char *path, struct fuse_file_info *fi) {
+    const char *filename = path + 1;
+    if (filename[0] == '\0')
+        return -ENOENT;
+
+    char chunk_path[512];
+    snprintf(chunk_path, sizeof(chunk_path), "%s/%s.000", RELIC_DIR, filename);
+
+    if (access(chunk_path, F_OK) == 0) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg), "READ: %s", filename);
+        log_activity(log_msg);
+    }
+
+    return 0;
+}
+```
+```bash
+static int baymax_read(const char *path, char *buf, size_t size, off_t offset,
+                       struct fuse_file_info *fi) {
+    const char *filename = path + 1;
+
+    size_t total = 0;
+    off_t current_offset = 0;
+    char chunk_path[512], tmp_buf[MAX_CHUNK_SIZE];
+
+    for (int i = 0;; i++) {
+        snprintf(chunk_path, sizeof(chunk_path), "%s/%s.%03d", RELIC_DIR, filename, i);
+        FILE *f = fopen(chunk_path, "rb");
+        if (!f) break;
+
+        size_t chunk_size = fread(tmp_buf, 1, MAX_CHUNK_SIZE, f);
+        fclose(f);
+
+        if (offset < current_offset + chunk_size) {
+            size_t start = offset > current_offset ? offset - current_offset : 0;
+            size_t to_copy = chunk_size - start;
+            if (to_copy > size - total)
+                to_copy = size - total;
+
+            memcpy(buf + total, tmp_buf + start, to_copy);
+            total += to_copy;
+            offset += to_copy;
+
+            if (total >= size) break;
+        }
+
+        current_offset += chunk_size;
+    }
+
+    return total;
+}
+```
+
+d. Menulis dan Memecah File Baru (create, write, release)
+Saat pengguna membuat file baru, kita menulisnya ke /tmp, lalu saat file ditutup (release), file dipecah jadi 14 bagian dan disimpan di relics.
+```bash
+static int baymax_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    (void)mode;
+    const char *filename = path + 1;
+
+    char tmpfile[512];
+    snprintf(tmpfile, sizeof(tmpfile), "/tmp/baymax_%s_tmp", filename);
+
+    FILE *tmp = fopen(tmpfile, "wb");
+    if (!tmp) return -EIO;
+    fclose(tmp);
+
+    return 0;
+}
+```
+```bash
+static int baymax_write(const char *path, const char *buf, size_t size, off_t offset,
+                        struct fuse_file_info *fi) {
+    const char *filename = path + 1;
+
+    char tmpfile[512];
+    snprintf(tmpfile, sizeof(tmpfile), "/tmp/baymax_%s_tmp", filename);
+
+    FILE *tmp = fopen(tmpfile, "r+b");
+    if (!tmp) tmp = fopen(tmpfile, "wb");
+    if (!tmp) return -EIO;
+
+    fseek(tmp, offset, SEEK_SET);
+    size_t written = fwrite(buf, 1, size, tmp);
+    fclose(tmp);
+
+    return written;
+}
+```
+```bash
+static int baymax_release(const char *path, struct fuse_file_info *fi) {
+    const char *filename = path + 1;
+
+    char tmpfile[512];
+    snprintf(tmpfile, sizeof(tmpfile), "/tmp/baymax_%s_tmp", filename);
+
+    FILE *src = fopen(tmpfile, "rb");
+    if (!src) return 0;
+
+    fseek(src, 0, SEEK_END);
+    long fsize = ftell(src);
+    rewind(src);
+
+    char *buffer = malloc(fsize);
+    if (!buffer) {
+        fclose(src);
+        return -ENOMEM;
+    }
+
+    fread(buffer, 1, fsize, src);
+    fclose(src);
+
+    mkdir(RELIC_DIR, 0755);
+
+    long part_size = fsize / 14;
+    long remainder = fsize % 14;
+    long offset = 0;
+
+    for (int i = 0; i < 14; ++i) {
+        char chunk_path[512];
+        snprintf(chunk_path, sizeof(chunk_path), "%s/%s.%03d", RELIC_DIR, filename, i);
+
+        long this_part = part_size + (i < remainder ? 1 : 0);
+        FILE *out = fopen(chunk_path, "wb");
+        if (out) {
+            fwrite(buffer + offset, 1, this_part, out);
+            fclose(out);
+        }
+        offset += this_part;
+    }
+
+    free(buffer);
+    remove(tmpfile);
+
+    char log_msg[512];
+    snprintf(log_msg, sizeof(log_msg), "WRITE: %s -> %s.000 - %s.013", filename, filename, filename);
+    log_activity(log_msg);
+
+    return 0;
+}
+```
+
+e. Menghapus File dan Semua Pecahannya (unlink)
+Jika pengguna menghapus Baymax.jpeg di mount, maka semua file .000 sampai .013 harus ikut dihapus.
+```bash
+static int baymax_unlink(const char *path) {
+    const char *filename = path + 1;
+    char chunk_path[512];
+    int i = 0;
+    int found = 0;
+
+    while (1) {
+        snprintf(chunk_path, sizeof(chunk_path), "%s/%s.%03d", RELIC_DIR, filename, i);
+        if (access(chunk_path, F_OK) != 0)
+            break;
+        remove(chunk_path);
+        found = 1;
+        i++;
+    }
+
+    if (found) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg), "DELETE: %s -> %s.000 - %s.%03d", filename, filename, filename, i - 1);
+        log_activity(log_msg);
+        return 0;
+    }
+
+    return -ENOENT;
+}
+```
+f. Pencatatan Aktivitas Selama Proses Dijalankan
+```bash
+[2025-05-19 14:19:11] WRITE: baru.txt -> baru.txt.000 - baru.txt.013
+[2025-05-19 14:19:21] READ: baru.txt
+[2025-05-19 14:20:13] DELETE: baru.txt -> baru.txt.000 - baru.txt.013
+[2025-05-19 14:22:41] READ: Baymax.jpeg
+[2025-05-20 16:21:49] READ: Baymax.jpeg
+```
+
+Dengan menjalankan beberapa command
+- ``gcc baymax.c `pkg-config fuse3 --cflags --libs` -o baymax``
+- ``./baymax mount_dir/``
+- ``sudo umount mount_dir``
+
+Maka Menghasilkan output seperti ini:
+![image](https://github.com/user-attachments/assets/e9eabe37-0589-4780-85e6-bc35c17e2aea)
+
 # Soal 3
 Oleh : Oryza Qiara Ramadhani (084)
 
