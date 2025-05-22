@@ -1,4 +1,4 @@
-# Sisop-1-2025-IT29
+![image](https://github.com/user-attachments/assets/ecc01ccc-3628-4c56-a0bf-17a331992ebb)# Sisop-1-2025-IT29
 
 - Bayu Kurniawan - 5027241055
 - Angga Firmansyah - 5027241062
@@ -339,7 +339,8 @@ int main(int argc, char *argv[]) {
 
 Hanya bisa mendownload, unzip, serta menghapus zip.
 
-![alt text](image.png)
+![image](https://github.com/user-attachments/assets/ff7a1c53-a5a2-4e12-ae2b-2d0017a8f398)
+
 
 # REVISI 
 
