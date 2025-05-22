@@ -5,7 +5,7 @@
 - Oryza Qiara Ramadhani - 5027241084
 
 # Soal 1
-Oleh : 
+Oleh : Angga Firmansyah (062)
 
 # Soal 2
 Oleh : Oryza Qiara Ramadhani (084)
