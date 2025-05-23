@@ -1,294 +1,187 @@
 #define FUSE_USE_VERSION 31
-#define _FILE_OFFSET_BITS 64
-
-#include <fuse3/fuse.h>
+#include <fuse.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <time.h>
-#include <sys/stat.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <dirent.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <curl/curl.h>
 
-#define BASE_DIR "/home/khalid/a/source_dir"  // Ganti ini ke path absolut sesuai di PC kamu
-#define TEMP_ZIP "/tmp/temp.zip"
-#define IMAGE_DIR "image"
+static char *g_hex_files_temp_path = NULL;
+static char *g_current_working_dir = NULL;
+static char g_temp_base_directory[1024];
 
-typedef struct {
-    unsigned char *data;
-    size_t size;
-} Memory;
-
-static Memory zip_data = {NULL, 0};
-
-// Curl write callback (to memory)
-static size_t write_to_memory(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    size_t realsize = size * nmemb;
-    Memory *mem = (Memory *)userdata;
-    unsigned char *new_ptr = realloc(mem->data, mem->size + realsize + 1);
-    if (!new_ptr) return 0;
-    mem->data = new_ptr;
-    memcpy(&(mem->data[mem->size]), ptr, realsize);
-    mem->size += realsize;
-    mem->data[mem->size] = '\0';
-    return realsize;
-}
-
-// Download file ZIP dari Google Drive dan extract
-static int download_and_extract() {
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
-
-    const char *file_id = "1hi_GDdP51Kn2JJMw02WmCOxuc3qrXzh5";
-    const char *base_url = "https://drive.google.com/uc?export=download&id=1hi_GDdP51Kn2JJMw02WmCOxuc3qrXzh5";
-    char confirm_token[128] = {0};
-    char cookie_file[] = "/tmp/cookies.txt";
-    char url[512];
-
-    // Step 1: Fetch token page
-    Memory page = {NULL, 0};
-    curl_easy_setopt(curl, CURLOPT_URL, base_url);
-    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_memory);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &page);
-
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Gagal download halaman awal: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
-        return -1;
-    }
-
-    char *p = NULL;
-    if (page.data) {
-        p = strstr((char *)page.data, "confirm=");
-        if (p) sscanf(p, "confirm=%127[^&\"]", confirm_token);
-    }
-    free(page.data);
-
-    // Step 2: Download ZIP file
-    if (strlen(confirm_token) > 0) {
-        snprintf(url, sizeof(url),
-            "https://drive.google.com/uc?export=download&confirm=%s&id=%s",
-            confirm_token, file_id);
-    } else {
-        snprintf(url, sizeof(url), "%s", base_url);
-    }
-
-    zip_data.data = NULL;
-    zip_data.size = 0;
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_memory);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &zip_data);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-    res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Gagal download ZIP: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
-        return -1;
-    }
-
-    curl_easy_cleanup(curl);
-
-    FILE *fp = fopen(TEMP_ZIP, "wb");
-    if (!fp) {
-        perror("fopen temp.zip");
-        free(zip_data.data);
-        return -1;
-    }
-    fwrite(zip_data.data, 1, zip_data.size, fp);
-    fclose(fp);
-    free(zip_data.data);
-
-    mkdir(BASE_DIR, 0755);
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "unzip -o %s -d %s && rm %s", TEMP_ZIP, BASE_DIR, TEMP_ZIP);
-    return system(cmd);
-}
-
-// Konversi hex string ke biner
-static int hex_to_bin(const char *hex, unsigned char **out, size_t *outlen) {
-    size_t len = strlen(hex);
-    if (len % 2 != 0) return -1;
-    *outlen = len / 2;
-    *out = malloc(*outlen);
-    if (!*out) return -1;
-    for (size_t i = 0; i < len; i += 2) {
-        if (sscanf(hex + i, "%2hhx", &(*out)[i / 2]) != 1) {
-            free(*out);
-            return -1;
+size_t hex_to_bin(const char *hs, unsigned char *bb) {
+    size_t sl = strlen(hs), hi = 0, bi = 0;
+    while (hi < sl) {
+        if (hs[hi]==' '||hs[hi]=='\n'||hs[hi]=='\r'||hs[hi]=='\t') { hi++; continue; }
+        if (hi+1 >= sl) { fprintf(stderr, "Err: Odd hex length: %s\n", hs); return 0; }
+        char bs[3]; bs[0]=hs[hi]; bs[1]=hs[hi+1]; bs[2]='\0';
+        long val = strtol(bs, NULL, 16);
+        if (errno == EINVAL || errno == ERANGE || (val == 0 && (bs[0]!='0'||bs[1]!='0'))) {
+             fprintf(stderr, "Err: Invalid hex char: '%s'\n", bs); return 0;
         }
+        bb[bi++]=(unsigned char)val; hi+=2;
     }
+    return bi;
+}
+
+void log_conversion(const char *hf, const char *imf) {
+    char lp[1024]; snprintf(lp, sizeof(lp), "%s/conversion.log", g_current_working_dir);
+    FILE *lf = fopen(lp, "a");
+    if (!lf) { perror("Err opening log"); return; }
+    time_t rt; struct tm *ti; char ts[20];
+    time(&rt); ti = localtime(&rt);
+    strftime(ts, sizeof(ts), "%Y-%m-%d][%H:%M:%S", ti);
+    fprintf(lf, "[%s]: Converted %s to %s.\n", ts, hf, imf);
+    fclose(lf);
+}
+
+static size_t write_data(void *ptr, size_t size, size_t nmemb, FILE *stream) {
+    return fwrite(ptr, size, nmemb, stream);
+}
+
+static int shorekeeper_getattr(const char *p, struct stat *s, struct fuse_file_info *fi) {
+    (void)fi; memset(s, 0, sizeof(struct stat));
+    if (strcmp(p, "/") == 0) { s->st_mode = S_IFDIR | 0755; s->st_nlink = 2; }
+    else if (strcmp(p, "/conversion.log") == 0) {
+        char rlp[1024]; snprintf(rlp, sizeof(rlp), "%s/conversion.log", g_current_working_dir);
+        if (lstat(rlp, s) == -1) return -errno;
+    } else if (strstr(p, ".txt")) { s->st_mode = S_IFREG | 0444; s->st_nlink = 1; s->st_size = 4096; }
+    else { return -ENOENT; }
     return 0;
 }
 
-// Log hasil konversi ke file
-static void log_conversion(const char *src, const char *out) {
-    FILE *f = fopen("conversion.log", "a");
-    if (!f) return;
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%Y-%m-%d][%H:%M:%S", tm);
-    fprintf(f, "[%s]: Successfully converted hexadecimal text %s to %s\n", ts, src, out);
-    fclose(f);
-}
-
-// Debug fungsi untuk tes baca folder anomali
-void test_read_anomali() {
-    char real[512];
-    snprintf(real, sizeof(real), "%s/anomali", BASE_DIR);
-    DIR *d = opendir(real);
-    if (!d) {
-        perror("opendir test_read_anomali");
-        return;
-    }
-    struct dirent *e;
-    printf("Testing read dir %s\n", real);
-    while ((e = readdir(d)) != NULL) {
-        if (strcmp(e->d_name, ".") && strcmp(e->d_name, ".."))
-            printf("Found file: %s\n", e->d_name);
-    }
-    closedir(d);
-}
-
-// ========== FUSE Operations ==========
-
-static int do_getattr(const char *path, struct stat *st, struct fuse_file_info *fi) {
-    (void)fi;
-    memset(st, 0, sizeof(struct stat));
-
-    if (strcmp(path, "/") == 0 || strcmp(path, "/anomali") == 0) {
-        st->st_mode = S_IFDIR | 0755;
-        st->st_nlink = 2;
-        return 0;
-    }
-
-    // Tangani file dalam /anomali
-    if (strncmp(path, "/anomali/", 9) == 0) {
-        char full[512];
-        snprintf(full, sizeof(full), "%s%s", BASE_DIR, path);
-        if (lstat(full, st) == -1) {
-            perror("getattr lstat");
-            return -errno;
-        }
-        return 0;
-    }
-
-    return -ENOENT;
-}
-
-static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                      off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
-    (void)offset; (void)fi; (void)flags;
-
-    filler(buf, ".", NULL, 0, 0);
-    filler(buf, "..", NULL, 0, 0);
-
-    if (strcmp(path, "/") == 0) {
-        filler(buf, "anomali", NULL, 0, 0);
-        return 0;
-    }
-
-    if (strcmp(path, "/anomali") == 0) {
-        char real[512];
-        snprintf(real, sizeof(real), "%s/anomali", BASE_DIR);
-        printf("Reading directory in do_readdir: %s\n", real); // debug
-
-        DIR *d = opendir(real);
-        if (!d) {
-            perror("opendir do_readdir");
-            return -errno;
-        }
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) {
-                printf("Found file in do_readdir: %s\n", e->d_name); // debug
-                filler(buf, e->d_name, NULL, 0, 0);
+static int shorekeeper_readdir(const char *p, void *b, fuse_fill_dir_t f, off_t o, struct fuse_file_info *fi, enum fuse_readdir_flags fl) {
+    (void)o; (void)fi; (void)fl;
+    if (strcmp(p, "/") == 0) {
+        f(b, ".", NULL, 0, 0); f(b, "..", NULL, 0, 0); f(b, "conversion.log", NULL, 0, 0);
+        DIR *dp = opendir(g_hex_files_temp_path);
+        if (!dp) { fprintf(stderr, "Err opening hex dir: %s\n", g_hex_files_temp_path); return 0; }
+        struct dirent *de;
+        while ((de = readdir(dp)) != NULL) {
+            if (strcmp(de->d_name, ".") != 0 && strcmp(de->d_name, "..") != 0 && strstr(de->d_name, ".txt")) {
+                f(b, de->d_name, NULL, 0, 0);
             }
         }
-        closedir(d);
-        return 0;
-    }
-
-    return -ENOENT;
-}
-
-static int do_open(const char *path, struct fuse_file_info *fi) {
-    char full[512];
-    snprintf(full, sizeof(full), "%s%s", BASE_DIR, path);
-    int fd = open(full, fi->flags);
-    if (fd == -1) return -errno;
-    fi->fh = fd;
+        closedir(dp);
+    } else { return -ENOENT; }
     return 0;
 }
 
-static int do_read(const char *path, char *buf, size_t size, off_t offset,
-                   struct fuse_file_info *fi) {
-    int res = pread(fi->fh, buf, size, offset);
-    if (res == -1) return -errno;
-
-    if (offset == 0 && strstr(path, ".txt")) {
-        struct stat st;
-        if (fstat(fi->fh, &st) == -1) return res;
-
-        char *hex = malloc(st.st_size + 1);
-        if (!hex) return res;
-        pread(fi->fh, hex, st.st_size, 0);
-        hex[st.st_size] = '\0';
-
-        unsigned char *bin;
-        size_t bin_len;
-        if (hex_to_bin(hex, &bin, &bin_len) == 0) {
-            time_t now = time(NULL);
-            struct tm *tm = localtime(&now);
-            char ts[64];
-            strftime(ts, sizeof(ts), "%Y-%m-%d_%H:%M:%S", tm);
-
-            const char *base = strrchr(path, '/');
-            base = base ? base + 1 : path;
-
-            mkdir(IMAGE_DIR, 0755);
-
-            char name[256];
-            snprintf(name, sizeof(name), "%.*s_image_%s.png",
-                     (int)(strlen(base) - 4), base, ts);
-            char outpath[512];
-            snprintf(outpath, sizeof(outpath), "%s/%s", IMAGE_DIR, name);
-
-            FILE *f = fopen(outpath, "wb");
-            if (f) {
-                fwrite(bin, 1, bin_len, f);
-                fclose(f);
-                log_conversion(base, name);
-            }
-            free(bin);
-        }
-        free(hex);
-    }
-
-    return res;
+static int shorekeeper_open(const char *p, struct fuse_file_info *fi) {
+    if (strcmp(p, "/conversion.log") == 0) {
+        char rlp[1024]; snprintf(rlp, sizeof(rlp), "%s/conversion.log", g_current_working_dir);
+        int fd = open(rlp, O_RDONLY); if (fd == -1) return -errno;
+        fi->fh = fd; return 0;
+    } else if (strstr(p, ".txt")) { fi->fh = (uint64_t)-1; return 0; }
+    else { return -ENOENT; }
 }
 
-static struct fuse_operations ops = {
-    .getattr = do_getattr,
-    .readdir = do_readdir,
-    .open = do_open,
-    .read = do_read,
+static int shorekeeper_read(const char *p, char *b, size_t s, off_t o, struct fuse_file_info *fi) {
+    if (strcmp(p, "/conversion.log") == 0) { return pread((int)fi->fh, b, s, o); }
+    else if (strstr(p, ".txt")) {
+        char hff[256]; strncpy(hff, p+1, sizeof(hff)-1); hff[sizeof(hff)-1]='\0';
+        char *dot = strchr(hff, '.'); if (!dot) return -ENOENT;
+        char hfb[256]; strncpy(hfb, hff, dot-hff); hfb[dot-hff]='\0';
+
+        char ft_path[1024]; snprintf(ft_path, sizeof(ft_path), "%s/%s", g_hex_files_temp_path, hff);
+        FILE *hf = fopen(ft_path, "r"); if (!hf) { perror("Err opening hex file"); return -ENOENT; }
+        fseek(hf, 0, SEEK_END); long fs = ftell(hf); fseek(hf, 0, SEEK_SET);
+        char *hsc = malloc(fs+1);
+        if (!hsc) { fclose(hf); return -ENOMEM; }
+        size_t hrl = fread(hsc, 1, fs, hf); hsc[hrl]='\0'; fclose(hf);
+
+        unsigned char *id = malloc(hrl/2+1);
+        if (!id) { free(hsc); return -ENOMEM; }
+        size_t idl = hex_to_bin(hsc, id);
+        free(hsc); if (idl == 0) { free(id); return -EIO; }
+
+        char idp[1024]; snprintf(idp, sizeof(idp), "%s/image", g_current_working_dir); mkdir(idp, 0755);
+
+        time_t rt; struct tm *ti; char ts[20];
+        time(&rt); ti = localtime(&rt); strftime(ts, sizeof(ts), "%Y-%m-%d_%H:%M:%S", ti);
+        char iofn[512]; snprintf(iofn, sizeof(iofn), "%s/%s_image_%s.png", idp, hfb, ts);
+
+        FILE *imf = fopen(iofn, "wb");
+        if (!imf) { perror("Err creating image file"); free(id); return -EIO; }
+        fwrite(id, 1, idl, imf); fclose(imf);
+        log_conversion(hff, iofn); free(id); return 0;
+    } else { return -ENOENT; }
+}
+
+static int shorekeeper_release(const char *p, struct fuse_file_info *fi) {
+    if (fi->fh != 0 && fi->fh != (uint64_t)-1) close((int)fi->fh);
+    return 0;
+}
+
+static struct fuse_operations shorekeeper_oper = {
+    .getattr=shorekeeper_getattr, .readdir=shorekeeper_readdir,
+    .open=shorekeeper_open, .read=shorekeeper_read, .release=shorekeeper_release,
 };
 
 int main(int argc, char *argv[]) {
-    if (download_and_extract() != 0) {
-        fprintf(stderr, "Gagal download atau extract!\n");
-        return 1;
+    if (argc < 2) { fprintf(stderr, "Usage: %s <mount_point>\n", argv[0]); return 1; }
+
+    g_current_working_dir = getcwd(NULL, 0);
+    if (!g_current_working_dir) { perror("Err getting CWD"); return 1; }
+
+    char temp_dir_template[] = "/tmp/shorekeeper_hex_XXXXXX";
+    char *td_ptr = mkdtemp(temp_dir_template);
+    if (!td_ptr) { perror("Err creating temp dir"); free(g_current_working_dir); return 1; }
+    strncpy(g_temp_base_directory, temp_dir_template, sizeof(g_temp_base_directory)-1); g_temp_base_directory[sizeof(g_temp_base_directory)-1]='\0';
+
+    CURL *ch; FILE *zip_fp; CURLcode cr;
+    char *dl_url = "https://drive.usercontent.google.com/download?id=1hi_GDdP51Kn2JJMw02WmCOxuc3qrXzh5&export=download&authuser=0";
+    char oz_fn[1024]; snprintf(oz_fn, sizeof(oz_fn), "%s/hex_anomalies.zip", g_temp_base_directory);
+
+    curl_global_init(CURL_GLOBAL_DEFAULT); ch = curl_easy_init();
+    if (ch) {
+        zip_fp = fopen(oz_fn, "wb");
+        if (!zip_fp) { perror("Err creating zip file"); curl_easy_cleanup(ch); curl_global_cleanup(); free(g_current_working_dir); rmdir(g_temp_base_directory); return 1; }
+        curl_easy_setopt(ch, CURLOPT_URL, dl_url); curl_easy_setopt(ch, CURLOPT_WRITEFUNCTION, write_data); curl_easy_setopt(ch, CURLOPT_WRITEDATA, zip_fp);
+        curl_easy_setopt(ch, CURLOPT_FOLLOWLOCATION, 1L);
+        cr = curl_easy_perform(ch); fclose(zip_fp);
+        if (cr != CURLE_OK) { fprintf(stderr, "Err: curl_easy_perform() failed: %s\n", curl_easy_strerror(cr)); remove(oz_fn); curl_easy_cleanup(ch); curl_global_cleanup(); free(g_current_working_dir); rmdir(g_temp_base_directory); return 1; }
+        curl_easy_cleanup(ch);
     }
+    curl_global_cleanup();
 
-    test_read_anomali();  // Debug: cek folder anomali dan isinya di source_dir
+    char uz_cmd[2048]; snprintf(uz_cmd, sizeof(uz_cmd), "unzip -o %s -d %s", oz_fn, g_temp_base_directory);
+    int uz_status = system(uz_cmd);
+    if (uz_status != 0) { fprintf(stderr, "Err unzipping. Status: %d\n", uz_status); remove(oz_fn); free(g_current_working_dir); rmdir(g_temp_base_directory); return 1; }
+    remove(oz_fn);
 
-    return fuse_main(argc, argv, &ops, NULL);
+    char an_path[1024]; snprintf(an_path, sizeof(an_path), "%s/anomali", g_temp_base_directory);
+    g_hex_files_temp_path = strdup(an_path); if (!g_hex_files_temp_path) { perror("Err allocating hex path"); free(g_current_working_dir); return 1; }
+
+    char img_dir_path[1024]; snprintf(img_dir_path, sizeof(img_dir_path), "%s/image", g_current_working_dir);
+    mkdir(img_dir_path, 0755);
+
+    char log_path[1024]; snprintf(log_path, sizeof(log_path), "%s/conversion.log", g_current_working_dir);
+    FILE *temp_log_f = fopen(log_path, "a"); if (temp_log_f) fclose(temp_log_f);
+
+    char *fuse_argv[4] = {argv[0], argv[1], "-f", "-s"};
+    int fs = fuse_main(4, fuse_argv, &shorekeeper_oper, NULL);
+
+    DIR *anom_dp = opendir(g_hex_files_temp_path);
+    if (anom_dp) {
+        struct dirent *entry;
+        while ((entry = readdir(anom_dp)) != NULL) {
+            if (strcmp(entry->d_name, ".")==0||strcmp(entry->d_name, "..")==0) continue;
+            char entry_fp[1024]; snprintf(entry_fp, sizeof(entry_fp), "%s/%s", g_hex_files_temp_path, entry->d_name);
+            remove(entry_fp);
+        }
+        closedir(anom_dp);
+    }
+    rmdir(g_hex_files_temp_path);
+    rmdir(g_temp_base_directory);
+
+    free(g_hex_files_temp_path); free(g_current_working_dir);
+    return fs;
 }
+
