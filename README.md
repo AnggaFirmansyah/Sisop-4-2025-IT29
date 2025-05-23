@@ -632,6 +632,7 @@ Dengan menjalankan beberapa command
 
 Maka Menghasilkan output seperti ini:
 ![image](https://github.com/user-attachments/assets/e9eabe37-0589-4780-85e6-bc35c17e2aea)
+![image](https://github.com/user-attachments/assets/6458460f-2eaa-495f-82b2-5ffeeaeb756c)
 ![image](https://github.com/user-attachments/assets/6b8c409e-8ddc-467a-9718-ddcdf4866c77)
 
 
