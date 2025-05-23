@@ -346,6 +346,10 @@ Dokumentasi :
 - Poin diatas menyelesaian poin a yang mendownload, unzip, delete zip. Proses mouunt fuse berhasil namun tidak terbuat direktori image serta conversion.log.
 - Kode mendownload anomaly.zip yang di letakkan pada direktori mountpoint yang dibuat secara manual
 
+![image](https://github.com/user-attachments/assets/360560ec-a291-4460-aef2-dc1e783a45ba)
+
+- Berhasil melakukan konversi hex ke image
+- Hasil konverso berhasil terkirim ke direktori image
 
 # REVISI 
 
