@@ -737,7 +737,107 @@ Dengan menjalankan beberapa command :
 - `docker exec antink-server cat /antink_mount/test.txt` mengecek isi dari file yang sudah di enkripsi
 - `docker logs -f antink-logger` pengecekan hasil log setelah beberapa command dijalankan
 
-
-
 # Soal 4
-Oleh : 
+Oleh : Bayu Kurniawan (055)
+
+a. Starter/Beginning Area - Starter Chiho
+Sesuai namanya, ini adalah area pertama yang ada di universe maimai. Di sini, file yang masuk akan disimpan secara normal, tetapi ditambahkan file extension .mai di direktori asli. Di folder FUSE sendiri, ekstension .mai tidak ada.
+
+```bash
+static int starter_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
+    (void) fi;
+    int res;
+    char fullpath[1024];
+
+    snprintf(fullpath, sizeof(fullpath), "%s%s.mai", SOURCE_DIR, path);
+
+    res = lstat(fullpath, stbuf);
+    if (res == -1)
+        return -errno;
+
+    return 0;
+}
+
+static int starter_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                          off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+    (void) offset;
+    (void) fi;
+    (void) flags;
+    DIR *dp;
+    struct dirent *de;
+    char fullpath[1024];
+
+    snprintf(fullpath, sizeof(fullpath), "%s%s", SOURCE_DIR, path);
+
+    dp = opendir(fullpath);
+    if (dp == NULL)
+        return -errno;
+
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+
+    while ((de = readdir(dp)) != NULL) {
+        if (strstr(de->d_name, ".mai") != NULL) {
+            char name[256];
+            strncpy(name, de->d_name, strlen(de->d_name) - 4);
+            name[strlen(de->d_name) - 4] = '\0';
+
+            struct stat st = {0};
+            st.st_ino = de->d_ino;
+            st.st_mode = de->d_type << 12;
+
+            filler(buf, name, &st, 0, 0);
+        }
+    }
+    closedir(dp);
+    return 0;
+}
+
+static int starter_open(const char *path, struct fuse_file_info *fi) {
+    char fullpath[1024];
+    snprintf(fullpath, sizeof(fullpath), "%s%s.mai", SOURCE_DIR, path);
+
+    int fd = open(fullpath, O_RDONLY);
+    if (fd == -1)
+        return -errno;
+
+    close(fd);
+    return 0;
+}
+
+static int starter_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    (void) fi;
+    int fd;
+    int res;
+    char fullpath[1024];
+
+    snprintf(fullpath, sizeof(fullpath), "%s%s.mai", SOURCE_DIR, path);
+
+    fd = open(fullpath, O_RDONLY);
+    if (fd == -1)
+        return -errno;
+
+    res = pread(fd, buf, size, offset);
+    if (res == -1)
+        res = -errno;
+
+    close(fd);
+    return res;
+
+
+static const struct fuse_operations starter_oper = {
+    .getattr = starter_getattr,
+    .readdir = starter_readdir,
+    .open = starter_open,
+    .read = starter_read,
+};
+
+int main(int argc, char *argv[]) {
+    return fuse_main(argc, argv, &starter_oper, NULL);
+}
+```
+
+kode tersebut digunakan untuk melakukan FUSE pada file mount yang ada, kemudian dapat dilihat dengan menampilkan file fuse_dir/starter. saat menggunakan `./maimai_fs fuse_dir/starter` akan menampilkan pesan sebagai berikut ketika menampilkan direktori Fuse.
+![image](https://github.com/user-attachments/assets/b6f10722-4087-478d-b310-be7d31f28642)
+![image](https://github.com/user-attachments/assets/b8f6b047-cfd4-424e-9032-30e3c50c3922)
+
