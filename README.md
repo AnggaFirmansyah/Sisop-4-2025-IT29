@@ -740,6 +740,13 @@ Dengan menjalankan beberapa command :
 # Soal 4
 Oleh : Bayu Kurniawan (055)
 
+Seperti yang kamu tahu, kamu telah mendapatkan pekerjaan di SEGA sebagai chart designer untuk game maimai. Karena kamu berhasil (iya kan) menyelesaikan challenge manipulasi majdata tersebut, SEGA mengirimkan email baru kepadamu. Mereka sangat terkesan karena kamu menyelesaikan tantangan mereka, dan kamu pun dipromosikan menjadi administrator untuk sistem in-game mereka.
+
+Di universe maimai, terdapat suatu mekanisme progres yang bernama chiho, yang merupakan bagian dari suatu area. https://maimai.sega.jp/area/
+Terdapat 7 area di maimai saat ini, dan tugasmu sekarang yaitu memastikan 7 area ini berfungsi sebagaimana mestinya. 
+[Author: Nathan / etern1ty]
+
+
 a. Starter/Beginning Area - Starter Chiho
 Sesuai namanya, ini adalah area pertama yang ada di universe maimai. Di sini, file yang masuk akan disimpan secara normal, tetapi ditambahkan file extension .mai di direktori asli. Di folder FUSE sendiri, ekstension .mai tidak ada.
 
